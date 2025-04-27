@@ -5,7 +5,7 @@ from pprint import pprint
 # Define the URL and the payload
 url = 'http://localhost:11434/api/generate'
 payload = {
-    "model": "llama2",
+    "model": "gpt-3.5-turbo",
     "prompt": "Why is the sky blue?",
     "system_role": "sales expert with 50 years of experience",
     "stream": False
