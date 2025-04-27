@@ -2,12 +2,15 @@ import streamlit as st
 import ollama
 import whisper
 import tempfile
+import openai
+from openai import OpenAI
 import os
 import sqlite3
 import uuid
 import subprocess
 import pandas as pd
 import torch
+import platform
 import re
 import gdown
 import asyncio
@@ -15,7 +18,6 @@ import sys
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
 
 # Путь к FFmpeg
 ffmpeg_path = r"C:\Program Files\FFmpeg\bin\ffmpeg.exe"
@@ -26,13 +28,12 @@ os.environ['PATH'] += os.pathsep + os.path.dirname(ffmpeg_path)
 # Загрузка модели Whisper для транскрибации
 model = whisper.load_model("base")
 
-# Явное указание пути для subprocess
-subprocess.run = lambda *args, **kwargs: subprocess.run(*args, **kwargs, executable=ffmpeg_path)
-
+client = OpenAI(api_key='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')
 
 # Инициализация базы данных
 def init_db():
-    conn = sqlite3.connect('audio_insights.db')
+    db_path = os.path.join(os.getcwd(), 'audio_insights.db')
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
 
     # Таблица инсайтов
@@ -73,48 +74,67 @@ def transcribe_audio(audio_path):
 
 
 def generate_insights(text):
-    """GPT Powered Edu assistant"""   # previous large language model was llama2.
-    # now we work with deepseek r1 model
-    # response = ollama.chat(model='deepseek-r1', messages=[
-    response = ollama.chat(model='', messages=[
-        {
-            'role': 'system',
-            'content': 'Ты эксперт по извлечению ключевых инсайтов из текста.'
-        },
-        {
-            'role': 'user',
-            'content': f'Извлеки ключевые инсайты из следующего текста: {text}'
-        }
-    ])
+    """GPT Powered Edu assistant"""
+    try:
+        # Store the original platform.platform function
+        original_platform_func = platform.platform
 
-    # Сохранение инсайтов в базу данных
-    insights = response['message']['content']
-    conn = sqlite3.connect('audio_insights.db')
-    c = conn.cursor()
-    insight_id = str(uuid.uuid4())
-    c.execute("INSERT INTO insights (id, transcription, insights) VALUES (?, ?, ?)",
-              (insight_id, text, insights))
-    conn.commit()
-    conn.close()
+        # Replace with a dummy function to avoid the issue
+        platform.platform = lambda: "Windows"
 
-    return insights
+        response = client.chat.completions.create(
+            model='gpt-3.5-turbo',
+            messages=[
+                {
+                    'role': 'system',
+                    'content': 'Ты эксперт по извлечению ключевых инсайтов из текста.'
+                },
+                {
+                    'role': 'user',
+                    'content': f'Извлеки ключевые инсайты из следующего текста: {text}'
+                }
+            ]
+        )
+
+        # Restore the original function
+        platform.platform = original_platform_func
+
+        # Сохранение инсайтов в базу данных
+        insights = response.choices[0].message.content
+        conn = sqlite3.connect('audio_insights.db')
+        c = conn.cursor()
+        insight_id = str(uuid.uuid4())
+        c.execute("INSERT INTO insights (id, transcription, insights) VALUES (?, ?, ?)",
+                  (insight_id, text, insights))
+        conn.commit()
+        conn.close()
+
+        return insights
+
+    except Exception as e:
+        # Restore the original function in case of error
+        platform.platform = original_platform_func
+        raise e
 
 
 def generate_quiz(text):
     """Генерация теста на основе текста"""
-    response = ollama.chat(model='llama2', messages=[
-        {
-            'role': 'system',
-            'content': 'Ты эксперт по созданию образовательных тестов.'
-        },
-        {
-            'role': 'user',
-            'content': f'Создай 5 многовариантных вопросов с правильными ответами по следующему тексту: {text}'
-        }
-    ])
+    response = client.chat.completions.create(
+        model='gpt-3.5-turbo',
+        messages=[
+            {
+                'role': 'system',
+                'content': 'Ты эксперт по созданию образовательных тестов.'
+            },
+            {
+                'role': 'user',
+                'content': f'Создай 5 многовариантных вопросов с правильными ответами по следующему тексту: {text}'
+            }
+        ]
+    )
 
     # Сохранение теста в базу данных
-    quiz_text = response['message']['content']
+    quiz_text = response.choices[0].message.content
     conn = sqlite3.connect('audio_insights.db')
     c = conn.cursor()
     quiz_id = str(uuid.uuid4())
@@ -124,8 +144,6 @@ def generate_quiz(text):
     conn.close()
 
     return quiz_id, quiz_text
-
-
 def search_in_text(text, query):
     """Расширенный поиск в тексте с поддержкой разных языков"""
     if not text or not query:
@@ -155,6 +173,7 @@ def search_in_text(text, query):
     return results
 
 
+
 def download_video_from_drive(drive_link):
     """Загрузка видео с Google Диска по ссылке"""
     match = re.search(r'drive.google.com/file/d/(.*?)/', drive_link)
@@ -175,14 +194,12 @@ def extract_audio(video_path):
     """Извлекает аудио из видео"""
     audio_path = video_path.replace(".mp4", ".wav")
     command = [ffmpeg_path, "-i", video_path, "-q:a", "0", "-map", "a", audio_path]
-    subprocess.run(command, check=True)
+    subprocess.run(command)
     return audio_path
 
 
 def main():
-    st.title('🎧 EduTube Ollama powered')
-    drive_link = st.text_input("Введите ссылку на видео с Google Диска:")
-
+    st.title('EduTube Ollama powered')
     # Боковое меню
     menu = st.sidebar.radio("Выберите раздел",
                             ["Загрузка Аудио",
@@ -191,17 +208,34 @@ def main():
                              "Поиск в Тексте"])
 
     if menu == "Загрузка Аудио":
-        # Загрузка аудио
-        uploaded_file = st.file_uploader("Загрузите аудиофайл", type=['mp3', 'wav', 'm4a'])
+        st.header("Выберите способ загрузки:")
 
-        if st.button("Загрузить и обработать видео"):
-            if drive_link:
-                video_path, error = download_video_from_drive(drive_link)
-                if error:
-                    st.error(error)
-                else:
-                    st.success(f"Видео загружено: {video_path}")
-                    st.video(video_path)  # Показываем видео в Streamlit
+        upload_option = st.radio("Источник загрузки", ("Локальный файл", "Ссылка на Google Диск"))
+
+        video_path = None
+        error = None
+        uploaded_file = None
+        drive_link = None
+
+        if upload_option == "Локальный файл":
+            uploaded_file = st.file_uploader("Загрузите видеофайл", type=['mp4', 'mov', 'avi'], key="local_upload")
+            if uploaded_file is not None:
+                # Сохраняем загруженный файл во временную папку
+                temp_path = os.path.join(tempfile.gettempdir(), uploaded_file.name)
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded_file.read())
+                video_path = temp_path
+                st.success(f"Файл загружен: {uploaded_file.name}")
+
+        elif upload_option == "Ссылка на Google Диск":
+            drive_link = st.text_input("Введите ссылку на видео с Google Диска:", key="drive_link")
+            if st.button("Скачать видео", key="download_button"):
+                if drive_link:
+                    video_path, error = download_video_from_drive(drive_link)
+                    if error:
+                        st.error(error)
+                    else:
+                        st.success(f"Видео скачано: {video_path}")
 
                     # Извлекаем аудио
                     try:
